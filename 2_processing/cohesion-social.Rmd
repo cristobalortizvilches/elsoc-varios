@@ -1,0 +1,536 @@
+---
+title: "Estatus subjetivo y Percepción de Mérito"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warnings = FALSE,
+  message = FALSE
+)
+```
+
+```{r paquetes}
+library(elsoc)
+library(survey)
+library(tidyverse)
+library(ggalluvial)
+library(scales)
+library(sjlabelled)
+library(sjmisc)
+```
+
+```{r cargar-bases}
+remove(list = ls())
+# Cargar bases desde Dataverse
+load(url("https://dataverse.harvard.edu/api/access/datafile/10797987")) # long 2016-2023
+load(url("https://dataverse.harvard.edu/api/access/datafile/10797986")) # wide 2016-2023
+```
+
+```{r recodificar-vars}
+elsoc_long_2016_2023[elsoc_long_2016_2023 == -888 | elsoc_long_2016_2023 == -999 | elsoc_long_2016_2023 == 994 | elsoc_long_2016_2023 == 995 | elsoc_long_2016_2023 == 996 | elsoc_long_2016_2023 == -666 | elsoc_long_2016_2023 == -777] <- NA # varias categorías a NA
+
+elsoc_base <- elsoc_long_2016_2023 %>%
+  filter(tipo_atricion == 1, muestra == 1) %>%
+  mutate(
+    # c02	Confianza Social Generalizada (1 = Casi siempre se puede confiar en las personas)
+    conf_prim = factor(car::recode(c02, "2 = 1; 3 = 2;  1 = 3;  else = NA"),
+                       levels = c(1,2,3),
+                       labels = c("Casi siempre hay que tener\ncuidado al tratar con las personas", 
+                                  "Depende", 
+                                  "Casi siempre se puede\nconfiar en las personas")),
+    # t01	Cuanto confía usted en sus vecinos (4 y 5 = Bastante o Mucho)
+    conf_veci = factor(car::recode(t01, "1:2 = 1;  3 = 2;  4:5 = 3;  else = NA"),
+                       levels = c(1,2,3),
+                       labels = c("Poco o muy poco", 
+                                  "Algo", 
+                                  "Bastante o mucho")),
+    # c07_03	Frecuencia: Amigos visitaron en su casa (2 y 3 = lo hizo una o más veces)
+    soci_prim = factor(car::recode(c07_03, "1= 1;  1:2 = 2; else = NA"),
+                       levels = c(1,2),
+                       labels = c("Nunca", "Una o más veces")),,
+    # c07_01	Visito la casa de vecino  (2 y 3 = lo hizo una o más veces)
+    soci_veci = factor(car::recode(t01, "1= 1;  1:2 = 2; else = NA"),
+                       levels = c(1,2),
+                       labels = c("Nunca", "Una o más veces")),
+    sexo = as_label(m0_sexo), 
+    edad = factor(car::recode(m0_edad, "18:29=1; 30:49=2; 50:64=3; 65:150=4"),
+                  labels = c('18-29', '30-49', '50-64', '65 o más'), levels = 1:4),
+    educ = factor(car::recode(m01,"1:3=1; 4:5=2; 6:7=3; 8:10=4"),
+                  labels = c("Básica", "Media", "Técnica", "Universitaria"), levels = 1:4),
+  ) %>%
+  sjlabelled::as_label(ola)
+
+N_muestra <- elsoc_base %>%
+  summarise(N = n() / n_distinct(ola)) %>%
+  pull(N)  
+
+caption_elsoc <- paste0("Fuente: ELSOC 2016-2023. Muestra ponderada y sin atrición entre olas (N = ", N_muestra, ")")
+```
+
+# Confianza social
+
+## Confianzan interpersonal
+
+```{r confi-inter}
+datos_conf_prim <- elsoc_base %>% 
+  filter(!is.na(conf_prim)) %>%
+  prop(x = conf_prim, by = ola)
+
+g_conf_prim <- datos_conf_prim %>% 
+  ggplot(aes(y = prop, x = ola, fill = fct_rev(conf_prim), 
+             label = scales::percent(prop, accuracy = .1))) + 
+  geom_col(position = 'stack') +
+  geom_text(position = position_stack(vjust = .5),
+            size = 2.75, color = 'black') +
+  scale_y_continuous(labels = percent) + 
+  scale_fill_viridis_d(option = 'viridis', begin = .1, end = .9) +
+  theme_bw() +
+  theme(legend.position = 'top', legend.title = element_blank()) +
+  geom_text(position = position_stack(vjust = .5),
+            size= 2.75, color = rep(c('black', 'black', 'white'), 7)) +
+  labs(title = "Confianza interpesonal",
+       subtitle = "¿Diría usted que se puede confiar en las personas, o que hay que tener cuidado al tratar con ellas?",
+       y = NULL, x = NULL,
+       caption = caption_elsoc)
+
+ggsave(g_conf_prim, filename = "../3_output/g_conf_prim.png", width = 8, height = 5, dpi = 300, units = "in")
+
+g_conf_prim
+```
+
+```{r confi-inter-educ}
+datosconf_prim_educ <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(conf_prim)) %>% 
+  prop(x = conf_prim, by = c(ola, educ), na.rm = TRUE) %>% 
+  filter(conf_prim == "Casi siempre se puede\nconfiar en las personas") 
+
+gconf_prim_educ <- datosconf_prim_educ %>% 
+  ggplot(aes(x = ola, y = prop, fill = educ,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "mako", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Confianza interpersonal según nivel de educación",
+    subtitle = "Porcentaje que responde 'casi siempre se puede confiar en las personas'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gconf_prim_educ
+
+ggsave(gconf_prim_educ, filename = "../3_output/gconf_prim_educ.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r confi-inter-edad}
+datosconf_prim_edad <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(conf_prim)) %>% 
+  prop(x = conf_prim, by = c(ola, edad), na.rm = TRUE) %>% 
+  filter(conf_prim == "Casi siempre se puede\nconfiar en las personas") 
+
+gconf_prim_edad <- datosconf_prim_edad %>% 
+  ggplot(aes(x = ola, y = prop, fill = edad,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Confianza interpersonal según edad",
+    subtitle = "Porcentaje que responde 'casi siempre se puede confiar en las personas'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gconf_prim_edad
+
+ggsave(gconf_prim_edad, filename = "../3_output/gconf_prim_edad.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r confi-inter-sexo}
+datosconf_prim_sexo <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(conf_prim)) %>% 
+  prop(x = conf_prim, by = c(ola, sexo), na.rm = TRUE) %>% 
+  filter(conf_prim == "Casi siempre se puede\nconfiar en las personas") 
+
+gconf_prim_sexo <- datosconf_prim_sexo %>% 
+  ggplot(aes(x = ola, y = prop, fill = sexo,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Confianza interpersonal según sexo",
+    subtitle = "Porcentaje que responde 'casi siempre se puede confiar en las personas'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gconf_prim_sexo
+
+ggsave(gconf_prim_sexo, filename = "../3_output/gconf_prim_sexo.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+## Confianza vecinal
+
+```{r confi-veci}
+datos_conf_veci <- elsoc_base %>% 
+  filter(!is.na(conf_veci)) %>%
+  prop(x = conf_veci, by = ola)
+
+g_conf_veci <- datos_conf_veci %>% 
+  ggplot(aes(y = prop, x = ola, fill = fct_rev(conf_veci), 
+             label = scales::percent(prop, accuracy = .1))) + 
+  geom_col(position = 'stack') +
+  geom_text(position = position_stack(vjust = .5),
+            size = 2.75, color = 'black') +
+  scale_y_continuous(labels = percent) + 
+  scale_fill_viridis_d(option = 'viridis', begin = .1, end = .9) +
+  theme_bw() +
+  theme(legend.position = 'top', legend.title = element_blank()) +
+  geom_text(position = position_stack(vjust = .5),
+            size= 2.75, color = rep(c('black', 'black', 'white'), 7)) +
+  labs(title = "Confianza vecinal",
+       subtitle = "En términos generales, ¿cuánto confía usted en sus vecinos?",
+       y = NULL, x = NULL,
+       caption = caption_elsoc)
+
+ggsave(g_conf_veci, filename = "../3_output/g_conf_veci.png", width = 8, height = 5, dpi = 300, units = "in")
+
+g_conf_veci
+```
+
+```{r confi-veci-educ}
+datosconf_veci_educ <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(conf_veci)) %>% 
+  prop(x = conf_veci, by = c(ola, educ), na.rm = TRUE) %>% 
+  filter(conf_veci == "Bastante o mucho") %>% 
+  drop_na()
+
+gconf_veci_educ <- datosconf_veci_educ %>% 
+  ggplot(aes(x = ola, y = prop, fill = educ,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "mako", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Confianza en vecinos según nivel de educación",
+    subtitle = "Porcentaje que responde 'bastante o mucho'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gconf_veci_educ
+
+ggsave(gconf_veci_educ, filename = "../3_output/gconf_veci_educ.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r confi-veci-edad}
+datosconf_veci_edad <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(conf_veci)) %>% 
+  prop(x = conf_veci, by = c(ola, edad), na.rm = TRUE) %>% 
+  filter(conf_veci == "Bastante o mucho") 
+
+gconf_veci_edad <- datosconf_veci_edad %>% 
+  ggplot(aes(x = ola, y = prop, fill = edad,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Confianza en vecinos según edad",
+    subtitle = "Porcentaje que responde 'bastante o mucho'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gconf_veci_edad
+
+ggsave(gconf_veci_edad, filename = "../3_output/gconf_veci_edad.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r confi-veci-sexo}
+datosconf_veci_sexo <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(conf_veci)) %>% 
+  prop(x = conf_veci, by = c(ola, sexo), na.rm = TRUE) %>% 
+  filter(conf_veci == "Bastante o mucho") 
+
+gconf_veci_sexo <- datosconf_veci_sexo %>% 
+  ggplot(aes(x = ola, y = prop, fill = sexo,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Confianza en vecinos según sexo",
+    subtitle = "Porcentaje que responde 'bastante o mucho'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gconf_veci_sexo
+
+ggsave(gconf_veci_sexo, filename = "../3_output/gconf_veci_sexo.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+# Relaciones sociales
+
+## Relaciones interpersonales
+
+```{r soci-inter}
+datos_soci_prim <- elsoc_base %>% 
+  filter(!is.na(soci_prim)) %>%
+  prop(x = soci_prim, by = ola)
+
+g_soci_prim <- datos_soci_prim %>% 
+  ggplot(aes(y = prop, x = ola, fill = fct_rev(soci_prim), 
+             label = scales::percent(prop, accuracy = .1))) + 
+  geom_col(position = 'stack') +
+  geom_text(position = position_stack(vjust = .5),
+            size = 2.75, color = 'black') +
+  scale_y_continuous(labels = percent) + 
+  scale_fill_viridis_d(option = 'viridis', begin = .1, end = .9) +
+  theme_bw() +
+  theme(legend.position = 'top', legend.title = element_blank()) +
+  geom_text(position = position_stack(vjust = .5),
+            size= 2.75, color = rep(c('black', 'white'), 6)) +
+  labs(title = "Relaciones interpersonales",
+       subtitle = "Durante los últimos 12 meses ¿Han venido amigos a visitarlo a su casa",
+       y = NULL, x = NULL,
+       caption = caption_elsoc)
+
+ggsave(g_soci_prim, filename = "../3_output/g_soci_prim.png", width = 8, height = 5, dpi = 300, units = "in")
+
+g_soci_prim
+```
+
+```{r soci-inter-educ}
+datossoci_prim_educ <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(soci_prim)) %>% 
+  prop(x = soci_prim, by = c(ola, educ), na.rm = TRUE) %>% 
+  filter(soci_prim == "Una o más veces") %>% 
+  drop_na()
+
+gsoci_prim_educ <- datossoci_prim_educ %>% 
+  ggplot(aes(x = ola, y = prop, fill = educ,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "mako", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Relaciones interpersonales según nivel de educación",
+    subtitle = "Porcentaje que lo han visitado 'una o más veces'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gsoci_prim_educ
+
+ggsave(gsoci_prim_educ, filename = "../3_output/gsoci_prim_educ.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r soci-inter-edad}
+datossoci_prim_edad <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(soci_prim)) %>% 
+  prop(x = soci_prim, by = c(ola, edad), na.rm = TRUE) %>% 
+  filter(soci_prim == "Una o más veces")
+
+gsoci_prim_edad <- datossoci_prim_edad %>% 
+  ggplot(aes(x = ola, y = prop, fill = edad,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Relaciones interpersonales según edad",
+    subtitle = "Porcentaje que lo han visitado 'una o más veces'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gsoci_prim_edad
+
+ggsave(gsoci_prim_edad, filename = "../3_output/gsoci_prim_edad.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r soci-inter-sexo}
+datossoci_prim_sexo <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(soci_prim)) %>% 
+  prop(x = soci_prim, by = c(ola, sexo), na.rm = TRUE) %>% 
+  filter(soci_prim == "Una o más veces")
+
+gsoci_prim_sexo <- datossoci_prim_sexo %>% 
+  ggplot(aes(x = ola, y = prop, fill = sexo,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Relaciones interpersonales según sexo",
+    subtitle = "Porcentaje que lo han visitado 'una o más veces'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gsoci_prim_sexo
+
+ggsave(gsoci_prim_sexo, filename = "../3_output/gsoci_prim_sexo.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+## Relaciones vecinales
+
+```{r soci-veci}
+datos_soci_veci <- elsoc_base %>% 
+  filter(!is.na(soci_veci)) %>%
+  prop(x = soci_veci, by = ola)
+
+g_soci_veci <- datos_soci_veci %>% 
+  ggplot(aes(y = prop, x = ola, fill = fct_rev(soci_veci), 
+             label = scales::percent(prop, accuracy = .1))) + 
+  geom_col(position = 'stack') +
+  geom_text(position = position_stack(vjust = .5),
+            size = 2.75, color = 'black') +
+  scale_y_continuous(labels = percent) + 
+  scale_fill_viridis_d(option = 'viridis', begin = .1, end = .9) +
+  theme_bw() +
+  theme(legend.position = 'top', legend.title = element_blank()) +
+  geom_text(position = position_stack(vjust = .5),
+            size= 2.75, color = rep(c('black', 'white'), 7)) +
+ labs(title = "Relaciones vecinales",
+       subtitle = "Durante los últimos 12 meses ¿ha visitado la casa de algún vecino?",
+       y = NULL, x = NULL,
+       caption = caption_elsoc)
+
+ggsave(g_soci_veci, filename = "../3_output/g_soci_veci.png", width = 8, height = 5, dpi = 300, units = "in")
+
+g_soci_veci
+```
+
+```{r soci-veci-educ}
+datossoci_veci_educ <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(soci_veci)) %>% 
+  prop(x = soci_veci, by = c(ola, educ), na.rm = TRUE) %>% 
+  filter(soci_veci == "Una o más veces") %>% 
+  drop_na()
+
+gsoci_veci_educ <- datossoci_veci_educ %>% 
+  ggplot(aes(x = ola, y = prop, fill = educ,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "mako", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Relaciones vecinales según nivel de educación",
+    subtitle = "Porcentaje que ha visitado 'una o más veces'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gsoci_veci_educ
+
+ggsave(gsoci_veci_educ, filename = "../3_output/gsoci_veci_educ.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r soci-veci-edad}
+datossoci_veci_edad <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(soci_veci)) %>% 
+  prop(x = soci_veci, by = c(ola, edad), na.rm = TRUE) %>% 
+  filter(soci_veci == "Una o más veces") %>% 
+  drop_na()
+
+gsoci_veci_edad <- datossoci_veci_edad %>% 
+  ggplot(aes(x = ola, y = prop, fill = edad,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Relaciones vecinales según edad",
+    subtitle = "Porcentaje que ha visitado 'una o más veces'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gsoci_veci_edad
+
+ggsave(gsoci_veci_edad, filename = "../3_output/gsoci_veci_edad.png", width = 8, height = 5, dpi = 300, units = "in")
+```
+
+```{r soci-veci-sexo}
+datossoci_veci_sexo <- elsoc_base %>% 
+  filter(!is.na(ola), !is.na(soci_veci)) %>% 
+  prop(x = soci_veci, by = c(ola, sexo), na.rm = TRUE) %>% 
+  filter(soci_veci == "Una o más veces") %>% 
+  drop_na()
+
+gsoci_veci_sexo <- datossoci_veci_sexo %>% 
+  ggplot(aes(x = ola, y = prop, fill = sexo,
+             label = percent(prop, accuracy = .1))) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(position = position_dodge(width = 0.9), vjust = -0.5, size = 2.75) +
+  scale_fill_viridis_d(option = "rocket", begin = .2, end = .8, direction = -1) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  theme_bw() +
+  theme(legend.position = "top", legend.title = element_blank()) +
+  labs(
+    title = "Relaciones vecinales según sexo",
+    subtitle = "Porcentaje que ha visitado 'una o más veces'",
+    x = NULL,
+    y = NULL,
+    caption = caption_elsoc
+  )
+
+gsoci_veci_sexo
+
+ggsave(gsoci_veci_sexo, filename = "../3_output/gsoci_veci_sexo.png", width = 8, height = 5, dpi = 300, units = "in")
+```

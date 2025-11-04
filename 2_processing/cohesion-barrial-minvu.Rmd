@@ -1,0 +1,444 @@
+---
+title: "Cohesión barrial en perspectiva longitudinal y territorial"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE, warnings = FALSE, message = FALSE)
+
+library(elsoc)
+library(survey)
+library(tidyverse)
+library(ggalluvial)
+library(scales)
+library(sjlabelled)
+library(sjmisc)
+library(ggrepel)
+library(chilemapas)
+library(ggthemes) 
+```
+
+```{r cargar-bases}
+remove(list = ls())
+
+# Cargar bases desde Dataverse
+load(url("https://dataverse.harvard.edu/api/access/datafile/10797987")) # long 2016-2023
+load(url("https://dataverse.harvard.edu/api/access/datafile/10797986")) # wide 2016-2023
+
+load("../1_input/original-data/elsoc_chile.RData")
+
+neig_cities <- read.csv("../1_input/original-data/nse_barrio_muestra_nacional.csv") |> 
+  dplyr::select(idencuesta, nse_barrio_norm)
+```
+
+```{r recodificar-vars}
+elsoc_long_2016_2023[elsoc_long_2016_2023 == -888 | elsoc_long_2016_2023 == -999 | elsoc_long_2016_2023 == 994 | elsoc_long_2016_2023 == 995 | elsoc_long_2016_2023 == 996 | elsoc_long_2016_2023 == -666 | elsoc_long_2016_2023 == -777] <- NA # varias categorías a NA
+
+elsoc_base <- elsoc_long_2016_2023 %>%
+  filter(tipo_atricion == 1, muestra %in% 1:2) %>%
+  mutate(
+    # t02_ Promedio sentido de pertenencia
+    spbi = rowMeans(dplyr::select(., t02_01, t02_02, t02_03, t02_04), na.rm = TRUE),
+    # t03_ Promedio sociabilidad  vecinal
+    soci = rowMeans(dplyr::select(., t03_01, t03_02, t03_03, t03_04), na.rm = TRUE),
+    repu = t08,
+    segu = t10) %>% 
+  mutate(
+    # t02_ Promedio sentido de pertenencia recodificado
+    spbi_reco = factor(cut(spbi, breaks = c(0,2.5,3.5,5), labels = c(1,2,3)), labels = c("Bajo", "Medio", "Alto")),
+    # t05 Arraigo físico
+    arra_fisi = factor(car::recode(t05, "c(1,2,4)=1; c(3)=2"), labels = c("Bajo", "Alto")),
+    # t03_ Promedio sociabilidad  vecinal recodificado
+    soci_reco = factor(cut(soci, breaks = c(0,2.5,3.5,5), labels = c(1,2,3)), labels = c("Bajo", "Medio", "Alto")),
+    # t01	Cuanto confía usted en sus vecinos (4 y 5 = Bastante o Mucho)
+    conf_veci = factor(car::recode(t01, "1:2 = 1;  3 = 2;  4:5 = 3"), labels = c("Bajo", "Medio", "Alto")),
+    # c07_01 Visito la casa de vecino  (2 y 3 = lo hizo una o más veces)
+    apoy_veci = factor(car::recode(c07_01, "c(1,2)=1; c(3)=2"), labels = c("Bajo", "Alto")),
+    # c12_01 Participación en juntas de vecinos
+    part_jjvv = factor(car::recode(c12_01, "c(1,2)=1; c(3)=2"), labels = c("Bajo", "Alto")), 
+    # t08 Reputación territorial
+    repu_terr = factor(car::recode(t08, "c(1,2)=1; c(3)=2; c(4,5)=3"), labels = c("Negativa", "Neutra", "Positiva")),
+    # t10 Seguridad barrial
+    segu_terr = factor(car::recode(t10, "c(1,2)=1; c(3)=2; c(4,5)=3"), labels = c("Baja", "Media", "Alta")),
+    # controles
+    sexo = as_label(m0_sexo), 
+    edad = factor(car::recode(m0_edad, "18:29=1; 30:49=2; 50:64=3; 65:150=4"),
+                  labels = c('18-29', '30-49', '50-64', '65 o más'), levels = 1:4),
+    educ = factor(car::recode(m01,"1:3=1; 4:5=2; 6:7=3; 8:10=4"),
+                  labels = c("Básica", "Media", "Técnica", "Universitaria"), levels = 1:4),
+  ) %>%
+  as_label(ola) %>% 
+  dplyr::select(idencuesta, segmento_disenno, estrato_disenno, ponderador02, ola, 
+                spbi, soci, repu, segu,
+                spbi_reco, arra_fisi, soci_reco, conf_veci, apoy_veci, part_jjvv, repu_terr, segu_terr, sexo, edad, educ) %>% 
+  left_join(neig_cities, by = "idencuesta") %>% 
+  mutate(nse_barrio = fct_rev(factor(ntile(nse_barrio_norm, 3), labels = c("Bajo", "Medio", "Alto"))),
+         perfil_terr = case_when(
+           # Regla 1: Perfil Óptimo (ambas altas): repu y segu sean 4 o 5.
+           repu >= 4 & segu >= 4   ~ "Alta — Alta",
+           # Regla 2: Perfil Crítico (ambas bajas): repu y segu sean 1 o 2.
+           repu <= 2 & segu <= 2   ~ "Baja — Baja",
+           # Regla 3: Fortaleza en Reputación (reputación alta, seguridad no). Se evalúa DESPUÉS de la regla 1, solo captura los casos donde t08 es alta pero t10 no lo es.
+           repu >= 4 ~ "Alta — Media/Baja",
+           # Regla 4: Fortaleza en Seguridad (seguridad alta, reputación no). Se evalúa DESPUÉS de las reglas 1 y 3.
+           segu >= 4 ~ "Media/Baja — Alta",
+           # Regla 5: Perfil Intermedio (todos los demás casos) 'TRUE ~' actúa como un "ELSE" que captura todo lo que no cumplió las condiciones anteriores.
+           TRUE  ~ "Media — Media")) %>% 
+  mutate(perfil_terr = factor(perfil_terr,
+                              levels = c("Baja — Baja",
+                                         "Media — Media",
+                                         "Media/Baja — Alta",
+                                         "Alta — Media/Baja",
+                                         "Alta — Alta")))
+
+N_muestra <- elsoc_base %>%
+  summarise(N = trunc(n() / n_distinct(ola))) %>%
+  pull(N)  
+```
+
+```{r cob-longitudinal}
+# 1. Preparar datos base
+cob_inter <- elsoc_base %>% 
+  pivot_longer(cols = c(spbi_reco, arra_fisi, soci_reco, conf_veci, apoy_veci, part_jjvv)) %>% 
+  prop(value == "Alto", by = c(ola, name), na.rm = TRUE) %>% 
+  mutate(name = factor(name,
+                       levels = c('spbi_reco', 'arra_fisi', 'soci_reco', 'conf_veci', 'apoy_veci', 'part_jjvv'),
+                       labels = c('Pertenencia', 'Arraigo',
+                                  'Sociabilidad', 'Confianza',
+                                  'Visita', 'Participación')))
+
+# 2. Obtener orden de leyenda según promedio de prop
+cob_inter_prom <- cob_inter %>%
+  group_by(name) %>%
+  summarise(media_prop = mean(prop, na.rm = TRUE)) %>%
+  arrange(desc(media_prop))
+
+orden_leyenda <-  cob_inter_prom %>%
+  pull(name) %>%
+  as.character()
+
+# 3. Incluir promedio en las etiquetas y aplicar nuevo orden (corregido)
+cob_inter <- cob_inter %>%
+  left_join(cob_inter_prom, by = "name") %>%
+  mutate(name_label = paste0(name, " (", trunc(media_prop * 100, 1), "%)"))
+
+# Crear vector con el nuevo orden
+orden_leyenda_labels <- paste0(orden_leyenda, " (", 
+                               trunc(cob_inter_prom$media_prop * 100, 1), "%)")
+
+# Reordenar factor según ese vector (argumento posicional, no nombrado)
+cob_inter <- cob_inter %>%
+  mutate(name_label = fct_relevel(name_label, orden_leyenda_labels))
+
+# 4. Generar gráfico
+cob_inter_plot <- cob_inter %>% 
+  ggplot(aes(y = prop, x = ola, fill = name_label, group = name_label,
+             label = percent(prop, accuracy = .1))) +
+  geom_line(aes(color = name_label), size = 1) +
+  geom_point(shape = 21, size = 2.5, color = "black", stroke = 0.7) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_color_brewer(palette = "Set2") +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2), labels = percent, limits = c(0, 1)) +
+  labs(title = "Figura 1. Indicadores de cohesión barrial según año",
+       subtitle = "Porcentaje de encuestados con valores altos en cada indicador",
+       caption = "Fuente: Elaboración propia en base a ELSOC 2016-2023.\nMuestra ponderada y sin atrición entre olas (N = 1648).",
+       y = NULL, x = NULL, 
+       color = expression("Cohesión barrial (" * bar(x) * ")"), fill = expression("Cohesión barrial (" * bar(x) * ")")) +
+  theme_minimal() +
+  theme(legend.position = 'right',
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.caption = element_text(size = 12, hjust = 0, vjust = -1.5))
+
+# 5. Guardar gráfico
+ggsave(cob_inter_plot, filename = "../3_output/cohesion_barrial/cob_inter_plot.jpg", width = 6, height = 5, units = "in", dpi = 2400)
+
+# 6. Mostrar gráfico
+cob_inter_plot
+```
+
+```{r cob-longitudinal-repu}
+# 1. Preparar datos con nombres y orden correctos
+cob_inter_nse <- elsoc_base %>% 
+  pivot_longer(cols = c(spbi_reco, arra_fisi, soci_reco, 
+                        conf_veci, apoy_veci, part_jjvv)) %>% 
+  prop(value == "Alto", by = c(ola, name, repu_terr), na.rm = TRUE) %>%
+  mutate(name = recode(name,
+                       'spbi_reco'  = 'Pertenencia',
+                       'soci_reco'  = 'Sociabilidad',
+                       'apoy_veci'  = 'Visitas',
+                       'arra_fisi'  = 'Arraigo',
+                       'conf_veci'  = 'Confianza',
+                       'part_jjvv'  = 'Participación'),
+         name = factor(name, levels = c("Pertenencia", "Sociabilidad", "Visitas",
+                                        "Arraigo", "Confianza", "Participación"))) %>% 
+  drop_na()
+
+# 2. Crear gráfico con puntos bordeados en negro y colores por repu_terr
+cob_inter_repu_plot <- cob_inter_nse %>%
+  ggplot(aes(x = ola, y = prop, group = fct_rev(repu_terr), fill = fct_rev(repu_terr))) +
+  geom_line(aes(color = fct_rev(repu_terr)), size = 0.7) +
+  geom_point(shape = 21, size = 1.8, stroke = 0.3, color = "black") +  # círculo negro con relleno por NSE
+  facet_wrap(~name, ncol = 3, nrow = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2), labels = percent, limits = c(0, 1)) +
+  #scale_fill_viridis_d() +
+  #scale_color_viridis_d() +
+  scale_fill_brewer(palette = "Set2") +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Cohesión barrial según reputación territorial percibida",
+    subtitle = "Porcentaje de encuestados con valores altos en cada indicador",
+    caption = "Fuente: Elaboración propia en base a ELSOC 2016–2023.\nMuestra ponderada y sin atrición entre olas (N = 1648).",
+    x = NULL, y = NULL,
+    color = "Reputación",
+    fill = "Reputación"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11),
+    axis.text = element_text(size = 11),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),  # etiquetas verticales
+    strip.text = element_text(size = 11, face = "bold"),
+    plot.caption = element_text(size = 10, hjust = 0)
+  )
+
+ggsave(cob_inter_repu_plot, filename = "../3_output/cohesion_barrial/cob_inter_repu_plot.jpg", width = 6, height = 5, units = "in", dpi = 2400)
+
+# Mostrar gráfico
+cob_inter_repu_plot
+
+```
+
+```{r cob-longitudinal-perfil}
+# 1. Preparar datos con nombres y orden correctos
+cob_perfil_ola <- elsoc_base %>% 
+  pivot_longer(cols = c(spbi_reco, arra_fisi, soci_reco, 
+                        conf_veci, apoy_veci, part_jjvv)) %>% 
+  prop(value == "Alto", by = c(ola, name, perfil_terr), na.rm = TRUE) %>%
+  mutate(name = recode(name,
+                       'spbi_reco'  = 'Pertenencia',
+                       'soci_reco'  = 'Sociabilidad',
+                       'apoy_veci'  = 'Visitas',
+                       'arra_fisi'  = 'Arraigo',
+                       'conf_veci'  = 'Confianza',
+                       'part_jjvv'  = 'Participación'),
+         name = factor(name, levels = c("Pertenencia", "Sociabilidad", "Visitas",
+                                        "Arraigo", "Confianza", "Participación"))) %>% 
+  drop_na() %>% 
+  filter(!perfil_terr == "Media — Media")
+
+# 2. Crear gráfico con puntos bordeados en negro y colores por perfil_terr
+cob_inter_perfil_plot <- cob_perfil_ola %>%
+  ggplot(aes(x = ola, y = prop, group = fct_rev(perfil_terr), fill = fct_rev(perfil_terr))) +
+  geom_line(aes(color = fct_rev(perfil_terr)), size = 0.5) +
+  #geom_point(size = 1.3, shape = 21, stroke = 0.3, color = "black") +  # círculo con relleno
+  geom_point(aes(color = fct_rev(perfil_terr)), size = 1) +  
+  facet_wrap(~name, ncol = 3, nrow = 2) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2), labels = percent, limits = c(0, 1)) +
+  scale_fill_viridis_d(begin = .15, end = .9, option = "inferno", direction = -1) +
+  scale_color_viridis_d(begin = .15, end = .9, option = "inferno", direction = -1) +
+  labs(
+    title = "Figura 1. Cohesión barrial según perfil reputación—seguridad",
+    subtitle = "Porcentaje de encuestados con valor elevado en cada indicador de cohesión",
+    caption = "Fuente: Elaboración propia en base a ELSOC 2016–2023. Muestra ponderada y sin atrición (N = 1648).",
+    x = NULL, y = NULL,
+    color = "Reputación — Seguridad",
+    fill =  "Reputación — Seguridad"
+  ) +
+  theme_hc() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 11, vjust = 1, hjust = 0.25, face = "bold"),
+    plot.subtitle = element_text(size = 10, vjust = 1, hjust = 0.2),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(angle = 65, vjust = 1, hjust = 1),  # etiquetas verticales
+    strip.text = element_text(size = 10),
+    plot.caption = element_text(size = 8, vjust = -1,  hjust = 0.2)
+  )
+
+ggsave(cob_inter_perfil_plot, filename = "../3_output/cohesion_barrial/cob_inter_perfil_plot.jpg", width = 6, height = 4, units = "in", dpi = 2400)
+
+# Mostrar gráfico
+cob_inter_perfil_plot
+
+writexl::write_xlsx(cob_perfil_ola %>% select(-prop_se), path = "../3_output/cohesion_barrial/cob_perfil_ola.xlsx")
+```
+
+```{r cob-territorial}
+elsoc_region <- elsoc_base %>% filter(ola == "2023") %>% 
+  left_join(elsoc_chile %>% dplyr::select(idencuesta, region_cod), by = "idencuesta") %>% 
+  group_by(region_cod) %>% 
+  summarise(spbi_w = weighted.mean(spbi, ponderador02, na.rm = T),
+            soci_w = weighted.mean(soci, ponderador02, na.rm = T),
+            repu_w = weighted.mean(repu, ponderador02, na.rm = T),
+            segu_w = weighted.mean(segu, ponderador02, na.rm = T)) %>% 
+  drop_na()
+
+# Generamos dataset con geometrías regionales para mapear
+geo_region <- generar_regiones() %>% 
+  mutate(codigo_region = str_remove(codigo_region, "^0")) %>% #quitar el Cero inicial de la codificación de regiones 
+  mutate(codigo_region = as.numeric(codigo_region)) %>% 
+  rename("region_cod" = "codigo_region")
+
+elsoc_region_sf <- left_join(geo_region, elsoc_region, by = "region_cod")
+
+# Establecer límites comunes para todas las escalas de color
+color_limits <- c(3.0,4.5)
+
+# SPBI
+spbi_plot <- ggplot() + 
+  geom_sf(data = geo_region, fill = "grey90", color = "white") + 
+  geom_sf(data = elsoc_region_sf, aes(fill = spbi_w, geometry = geometry)) +
+  coord_sf(xlim = c(-77, -66)) +
+  labs(x = NULL, y = NULL, fill = "Pertenencia") +
+  scale_fill_viridis_c(begin = 0, end = 1, direction = 1,
+                       option = "viridis", limits = color_limits) +
+  theme_void()
+
+# SOCI
+soci_plot <- ggplot() + 
+  geom_sf(data = geo_region, fill = "grey90", color = "white") + 
+  geom_sf(data = elsoc_region_sf, aes(fill = soci_w, geometry = geometry)) +
+  coord_sf(xlim = c(-77, -66)) +
+  labs(x = NULL, y = NULL, fill = "Sociabilidad") +
+  scale_fill_viridis_c(begin = .2, end = 1, direction = 1,
+                       option = "mako", limits = color_limits) +
+  theme_void()
+
+# REPU
+repu_plot <- ggplot() + 
+  geom_sf(data = geo_region, fill = "grey90", color = "white") + 
+  geom_sf(data = elsoc_region_sf, aes(fill = repu_w, geometry = geometry)) +
+  coord_sf(xlim = c(-77, -66)) +
+  labs(x = NULL, y = NULL, fill = "Reputación") +
+  scale_fill_viridis_c(begin = .3, end = .8, direction = 1,
+                       option = "magma", limits = color_limits) +
+  theme_void()
+
+# SEGU
+segu_plot <- ggplot() + 
+  geom_sf(data = geo_region, fill = "grey90", color = "white") + 
+  geom_sf(data = elsoc_region_sf, aes(fill = segu_w, geometry = geometry)) +
+  coord_sf(xlim = c(-77, -66)) +
+  labs(x = NULL, y = NULL, fill = "Seguridad") +
+  scale_fill_viridis_c(begin = .5, end = 1, direction = 1,
+                       option = "rocket", limits = color_limits) +
+  theme_void()
+
+# Composición final
+cob_region_plot <- ggpubr::ggarrange(spbi_plot, soci_plot, repu_plot, segu_plot, ncol = 4) 
+
+# Guardar imagen
+ggsave(cob_region_plot,  filename = "../3_output/cohesion_barrial/cob_region_plot.jpg", width = 8, height = 5, units = "in", dpi = 2400)
+```
+
+```{r cob-territorial-2}
+# 1. Promedios ponderados por región
+elsoc_region <- elsoc_base %>%
+  filter(ola == "2023") %>%
+  left_join(elsoc_chile %>% dplyr::select(idencuesta, region_cod), by = "idencuesta") %>%
+  group_by(region_cod) %>%
+  summarise(
+    spbi_w = weighted.mean(spbi, ponderador02, na.rm = TRUE),
+    soci_w = weighted.mean(soci, ponderador02, na.rm = TRUE),
+    repu_w = weighted.mean(repu, ponderador02, na.rm = TRUE),
+    segu_w = weighted.mean(segu, ponderador02, na.rm = TRUE)
+  ) %>% 
+  drop_na()
+
+# 2. Geometría regional
+geo_region <- generar_regiones() %>%
+  mutate(codigo_region = str_remove(codigo_region, "^0")) %>%
+  mutate(codigo_region = as.numeric(codigo_region)) %>%
+  rename(region_cod = codigo_region)
+
+# 3. Expandir combinaciones: todas las regiones x todas las variables
+region_var_grid <- expand_grid(
+  region_cod = unique(geo_region$region_cod),
+  variable = c("spbi_w", "soci_w", "repu_w", "segu_w")
+)
+
+# 4. Reestructurar datos a formato largo y unir al grid
+elsoc_region_long <- elsoc_region %>%
+  pivot_longer(cols = c(spbi_w, soci_w, repu_w, segu_w),
+               names_to = "variable", values_to = "valor") %>%
+  right_join(region_var_grid, by = c("region_cod", "variable"))  # asegura presencia de todas las combinaciones
+
+# 5. Unir con geometría
+elsoc_region_sf_long <- geo_region %>%
+  left_join(elsoc_region_long, by = "region_cod")
+
+
+# 6. Gráfico con facet sin panel extra
+cob_facet_plot <- ggplot(elsoc_region_sf_long) +
+  geom_sf(aes(fill = valor, geometry = geometry), color = "grey90") +
+  facet_wrap(~ fct_rev(variable), ncol = 4, labeller = as_labeller(c(spbi_w = "Pertenencia",
+                                                                     soci_w = "Sociabilidad",
+                                                                     repu_w = "Reputación",
+                                                                     segu_w = "Seguridad"))) +
+  scale_fill_viridis_c(name = "Nivel", option = "viridis",
+                       limits = c(3.0, 4.5), na.value = "grey50") +
+  coord_sf(xlim = c(-77, -65)) +
+  labs(title = "Figura 2. Cohesión barrial y sus correlatos según región",
+       subtitle = "Promedio regional ponderado para cada indicador (niveles '1=bajo' y '5=alto')",
+       caption = "Fuente: Elaboración propia en base a ELSOC 2023. Muestra ponderada (N = 1837).",
+      y = NULL, x = NULL) +
+  theme_hc() +
+  theme(legend.position = 'right',
+        plot.title = element_text(size = 13, vjust = 1, hjust = 0.25, face = "bold"),
+        plot.subtitle = element_text(size = 11, vjust = 1, hjust = 0.2),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 12),
+        axis.text.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        strip.text = element_text(size = 10),
+        plot.caption = element_text(size = 9, vjust = -1,  hjust = 0.2))
+
+# Mostrar
+cob_facet_plot
+
+ggsave(cob_facet_plot,  filename = "../3_output/cohesion_barrial/cob_facet_plot.jpg", width = 6, height = 6, units = "in", dpi = 2400)
+```
+
+```{r plot-to-svg}
+# Cargar librerías
+library(rsvg)
+library(magick)
+
+# Ruta al archivo SVG
+svg_file <- "../3_output/cohesion_barrial/cob-region-draw.svg"  # Reemplaza con tu ruta
+
+# Leer SVG con resolución alta (2400 dpi ≈ 2400/72 * 1000 ≈ 33333)
+# La función rsvg() no acepta directamente dpi, pero sí ancho/alto en pixeles.
+# Estimamos tamaño para ~2400 dpi (esto es aproximado y depende del tamaño original).
+# Alternativa: usar rsvg_png() con tamaño forzado
+
+# Convertimos SVG a PNG de alta resolución temporalmente
+temp_png <- tempfile(fileext = ".png")
+rsvg_png(svg_file, file = temp_png, width = 10000, height = 10000)  # ajuste 
+
+# Leer imagen PNG y convertir a JPG
+img <- image_read(temp_png)
+
+# Guardar como JPG con calidad máxima
+image_write(img, path = "../3_output/cohesion_barrial/cob-region-plot.jpg", format = "jpeg", quality = 100)
+
+# Opcional: eliminar el archivo temporal
+unlink(temp_png)
+```
+
