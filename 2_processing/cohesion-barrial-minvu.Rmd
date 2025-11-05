@@ -271,6 +271,8 @@ cob_inter_perfil_plot <- cob_perfil_ola %>%
   )
 
 ggsave(cob_inter_perfil_plot, filename = "../3_output/cohesion_barrial/cob_inter_perfil_plot.jpg", width = 6, height = 4, units = "in", dpi = 2400)
+ggsave(cob_inter_perfil_plot, filename = "../3_output/cohesion_barrial/cob_inter_perfil_plot.svg", width = 6, height = 4, units = "in", dpi = 2400)
+
 
 # Mostrar gráfico
 cob_inter_perfil_plot
@@ -385,7 +387,7 @@ elsoc_region_sf_long <- geo_region %>%
 
 # 6. Gráfico con facet sin panel extra
 cob_facet_plot <- ggplot(elsoc_region_sf_long) +
-  geom_sf(aes(fill = valor, geometry = geometry), color = "grey90") +
+  geom_sf(aes(fill = valor, geometry = geometry), color = "black") +
   facet_wrap(~ fct_rev(variable), ncol = 4, labeller = as_labeller(c(spbi_w = "Pertenencia",
                                                                      soci_w = "Sociabilidad",
                                                                      repu_w = "Reputación",
